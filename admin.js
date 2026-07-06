@@ -38,18 +38,56 @@ function showLogin(){
   $("#app-shell").style.display="none";
   $("#app-denied").style.display="none";
   $("#app-login").style.display="block";
+  on($("#lg-signin"),"click", signInPassword);
+  on($("#lg-signup"),"click", signUpPassword);
   on($("#lg-magic"),"click", magicLink);
-  on($("#lg-email"),"keydown", e=>{ if(e.key==="Enter") magicLink(); });
+  on($("#lg-pw"),"keydown", e=>{ if(e.key==="Enter") signInPassword(); });
+}
+function validEmail(e){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
+function setLoginStatus(html, ok){
+  const st=$("#lg-status");
+  st.innerHTML = ok===true ? "<span class='ok'>"+html+"</span>"
+              : ok===false ? "<span class='err'>"+html+"</span>"
+              : html;
+}
+async function signInPassword(){
+  const email=$("#lg-email").value.trim(); const pw=$("#lg-pw").value;
+  if(!validEmail(email)){ setLoginStatus("Email invalide.", false); return; }
+  if(!pw){ setLoginStatus("Entre ton mot de passe.", false); return; }
+  setLoginStatus("Connexion…");
+  try{
+    await NET.auth.signIn(email, pw);
+    setLoginStatus("✅ Connecté", true);
+    setTimeout(afterLogin, 400);
+  }catch(e){
+    const m=(e.message||"").toLowerCase();
+    if(m.includes("invalid") || m.includes("credentials")) setLoginStatus("Email ou mot de passe incorrect. Utilise le lien par email si tu as oublié.", false);
+    else setLoginStatus("Échec : "+escapeHtml(e.message||"réessaie"), false);
+  }
+}
+async function signUpPassword(){
+  const email=$("#lg-email").value.trim(); const pw=$("#lg-pw").value;
+  if(!validEmail(email)){ setLoginStatus("Email invalide.", false); return; }
+  if(!pw || pw.length<6){ setLoginStatus("Mot de passe : 6 caractères minimum.", false); return; }
+  setLoginStatus("Création du compte…");
+  try{
+    await NET.auth.signUp(email, pw);
+    if(NET.auth.session()){ setLoginStatus("✅ Compte créé et connecté", true); setTimeout(afterLogin, 400); }
+    else setLoginStatus("✅ Compte créé. Vérifie ton email pour confirmer, puis reviens te connecter.", true);
+  }catch(e){
+    const m=(e.message||"").toLowerCase();
+    if(m.includes("already") || m.includes("registered")) setLoginStatus("Cet email a déjà un compte. Utilise « Se connecter » avec ton mot de passe.", false);
+    else setLoginStatus("Échec : "+escapeHtml(e.message||"réessaie"), false);
+  }
 }
 async function magicLink(){
   const email = $("#lg-email").value.trim();
-  const st = $("#lg-status");
-  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ st.innerHTML="<span class='err'>Email invalide.</span>"; return; }
-  st.textContent="Envoi du lien…";
+  if(!validEmail(email)){ setLoginStatus("Email invalide.", false); return; }
+  setLoginStatus("Envoi du lien…");
   try{
     await NET.auth.magicLink(email, location.origin+"/");
-    st.innerHTML="<span class='ok'>Lien envoyé à <b>"+escapeHtml(email)+"</b>. Regarde ton email (et les spams).</span>";
-  }catch(e){ st.innerHTML="<span class='err'>Échec : "+escapeHtml(e.message||"réessaie")+"</span>"; }
+    setLoginStatus("Lien envoyé à <b>"+escapeHtml(email)+"</b>. Regarde ton email (et les spams).", true);
+  }catch(e){ setLoginStatus("Échec : "+escapeHtml(e.message||"réessaie"), false); }
 }
 
 async function afterLogin(){
