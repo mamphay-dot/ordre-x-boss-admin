@@ -278,27 +278,21 @@ async function openDetail(orgId){
   if(!org){ alert("Introuvable"); return; }
   const members = await NET.db("memberships").select({organization_id:"eq."+orgId}).catch(()=>[]);
   const profiles = await NET.db("profiles").select({organization_id:"eq."+orgId, deleted_at:"is.null"}).catch(()=>[]);
-  const audit = await NET.db("audit_log").select({organization_id:"eq."+orgId, order:"created_at.desc", limit:"10"}).catch(()=>[]);
+  const audit = await NET.db("audit_log").select({organization_id:"eq."+orgId, order:"created_at.desc", limit:"30"}).catch(()=>[]);
   const now = Date.now();
 
   const daysLeftPaid = org.paid_until_ms > now ? Math.ceil((org.paid_until_ms-now)/86400000) : 0;
   const trialEndMs = (Number(org.installed_at_ms)||now) + (org.trial_days||90)*86400000;
   const daysLeftTrial = trialEndMs > now ? Math.ceil((trialEndMs-now)/86400000) : 0;
 
-  const businessRows = profiles.map(p=>{
-    const d = p.data||{};
-    const nb = (d.caisse||[]).length;
-    return `<tr>
-      <td><b>${escapeHtml(d.name||"—")}</b></td>
-      <td>${escapeHtml(d.metier||"—")}</td>
-      <td class="num">${fmtInt((d.revenus||[]).length)}</td>
-      <td class="num">${fmtInt(nb)} écritures</td>
-      <td>${fmtDateTime(p.updated_at)}</td>
-    </tr>`;
-  }).join("");
+  __currentDetail = { org, orgId, profiles, members, audit, activeBiz: 0 };
 
+  const bizTabs = profiles.map((p,i)=>{
+    const d = p.data||{};
+    return `<button class="biz-tab ${i===0?'on':''}" data-biz="${i}">${escapeHtml(d.name||("Business "+(i+1)))}</button>`;
+  }).join("");
   const membersRows = members.map(m=>`<tr><td>${escapeHtml(m.nom||m.user_id.slice(0,8))}</td><td>${escapeHtml(m.role)}</td><td>${fmtDate(m.created_at)}</td></tr>`).join("");
-  const auditRows = audit.map(a=>`<tr><td>${fmtDateTime(a.created_at)}</td><td>${escapeHtml(a.action)}</td><td>${escapeHtml(a.actor_email||"—")}</td></tr>`).join("");
+  const auditRows = audit.map(a=>`<tr><td>${fmtDateTime(a.created_at)}</td><td>${escapeHtml(a.action)}</td><td>${escapeHtml(a.actor_email||"—")}</td><td>${escapeHtml(JSON.stringify(a.meta||{}).slice(0,80))}</td></tr>`).join("");
 
   openModal(`
     <h2>${escapeHtml(org.nom)}</h2>
@@ -322,13 +316,14 @@ async function openDetail(orgId){
       <button class="btn" data-act="paid90" data-id="${org.organization_id}">+90 jours</button>
       <button class="btn" data-act="paid365" data-id="${org.organization_id}">+1 an</button>
       <button class="btn" data-act="reset_trial" data-id="${org.organization_id}">Rétablir essai 90j</button>
+      <button class="btn" id="export-full">📥 Export JSON complet</button>
     </div>
 
-    <h2>Businesses (${profiles.length})</h2>
-    <div style="overflow:auto">
-      <table><thead><tr><th>Nom</th><th>Métier</th><th class="num">Produits</th><th class="num">Activité</th><th>Modifié</th></tr></thead>
-      <tbody>${businessRows||"<tr><td colspan=5 class='muted'>Aucun business</td></tr>"}</tbody></table>
-    </div>
+    ${profiles.length ? `
+    <h2>Businesses de ce client (${profiles.length})</h2>
+    <div class="biz-tabs">${bizTabs}</div>
+    <div id="biz-detail">${renderBusinessDetail(profiles[0])}</div>
+    ` : "<h2>Businesses</h2><div class='muted'>Aucun business enregistré.</div>"}
 
     <h2>Membres (${members.length})</h2>
     <div style="overflow:auto">
@@ -336,13 +331,157 @@ async function openDetail(orgId){
       <tbody>${membersRows||"<tr><td colspan=3 class='muted'>Aucun membre</td></tr>"}</tbody></table>
     </div>
 
-    <h2>Derniers événements</h2>
+    <h2>Derniers événements (${audit.length})</h2>
     <div style="overflow:auto">
-      <table><thead><tr><th>Quand</th><th>Action</th><th>Auteur</th></tr></thead>
-      <tbody>${auditRows||"<tr><td colspan=3 class='muted'>Aucun événement</td></tr>"}</tbody></table>
+      <table><thead><tr><th>Quand</th><th>Action</th><th>Auteur</th><th>Détails</th></tr></thead>
+      <tbody>${auditRows||"<tr><td colspan=4 class='muted'>Aucun événement</td></tr>"}</tbody></table>
     </div>
   `);
   $$("[data-act]").forEach(b=>b.onclick = ()=>orgAction(b.dataset.act, b.dataset.id));
+  $$(".biz-tab").forEach(b=>b.onclick = ()=>{ __currentDetail.activeBiz = +b.dataset.biz; document.getElementById("biz-detail").innerHTML = renderBusinessDetail(__currentDetail.profiles[__currentDetail.activeBiz]); $$(".biz-tab").forEach(x=>x.classList.toggle("on", x===b)); });
+  const eb = document.getElementById("export-full"); if(eb) eb.onclick = () => exportClientJSON();
+}
+
+let __currentDetail = { orgId: null, profiles: [], activeBiz: 0 };
+
+function renderBusinessDetail(p){
+  if(!p) return "<div class='muted'>—</div>";
+  const d = p.data || {};
+  const revenus = d.revenus || [];
+  const charges = d.charges || [];
+  const caisse = d.caisse || [];
+  const carnet = d.carnet || [];
+  const clients = d.clients || [];
+  const commandes = d.commandes || [];
+  const pieces = d.pieces || [];
+  const collaborateurs = d.collaborateurs || [];
+  const identite = d.identite || {};
+  const treso = d.tresorerie || {};
+
+  const ventes = caisse.filter(e=>e.type==="vente");
+  const depenses = caisse.filter(e=>e.type==="depense");
+  const totalCA = ventes.reduce((s,e)=>s+(e.montant||0),0);
+  const totalDep = depenses.reduce((s,e)=>s+(e.montant||0),0);
+  const totalCharges = charges.reduce((s,c)=>s+(c.montant||0),0);
+  const dettesImpayees = carnet.filter(c=>!c.paye).reduce((s,c)=>s+(c.montant||0),0);
+
+  return `
+    <div class="biz-info-grid">
+      <div class="detail-card"><div class="k">Nom du business</div><div class="v">${escapeHtml(d.name||"—")}</div></div>
+      <div class="detail-card"><div class="k">Métier</div><div class="v">${escapeHtml(d.metier||"—")}</div></div>
+      <div class="detail-card"><div class="k">CA cumulé</div><div class="v">${fmtF(totalCA)}</div></div>
+      <div class="detail-card"><div class="k">Dépenses cumulées</div><div class="v">${fmtF(totalDep)}</div></div>
+      <div class="detail-card"><div class="k">Charges fixes / mois</div><div class="v">${fmtF(totalCharges)}</div></div>
+      <div class="detail-card"><div class="k">Dettes impayées</div><div class="v">${fmtF(dettesImpayees)}</div></div>
+    </div>
+
+    ${identite.rccm || identite.tel || identite.adresse ? `
+    <h3>Identité</h3>
+    <div class="biz-info-grid">
+      ${identite.rccm?`<div class="detail-card"><div class="k">RCCM</div><div class="v">${escapeHtml(identite.rccm)}</div></div>`:""}
+      ${identite.ncc?`<div class="detail-card"><div class="k">NCC</div><div class="v">${escapeHtml(identite.ncc)}</div></div>`:""}
+      ${identite.tel?`<div class="detail-card"><div class="k">Téléphone</div><div class="v">${escapeHtml(identite.tel)}</div></div>`:""}
+      ${identite.email?`<div class="detail-card"><div class="k">Email</div><div class="v">${escapeHtml(identite.email)}</div></div>`:""}
+      ${identite.adresse?`<div class="detail-card" style="grid-column:1/-1"><div class="k">Adresse</div><div class="v">${escapeHtml(identite.adresse)}</div></div>`:""}
+    </div>` : ""}
+
+    ${treso.soldes ? `
+    <h3>Trésorerie (soldes)</h3>
+    <div class="biz-info-grid">
+      <div class="detail-card"><div class="k">Espèces</div><div class="v">${fmtF(treso.soldes.especes||0)}</div></div>
+      <div class="detail-card"><div class="k">Banque</div><div class="v">${fmtF(treso.soldes.banque||0)}</div></div>
+      <div class="detail-card"><div class="k">Mobile Money</div><div class="v">${fmtF(treso.soldes.mobile||0)}</div></div>
+    </div>` : ""}
+
+    <h3>Produits / Services (${revenus.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Nom</th><th class="num">Prix</th><th class="num">Coût</th><th class="num">Marge</th><th class="num">Qté/mois</th><th class="num">Stock</th></tr></thead>
+      <tbody>${revenus.length ? revenus.map(r=>{
+        const marge = r.prix ? Math.round(((r.prix-(r.cout||0))/r.prix)*100) : 0;
+        return `<tr>
+          <td><b>${escapeHtml(r.nom||"—")}</b>${r.desc?`<br><span class="muted" style="font-size:11px">${escapeHtml(String(r.desc).slice(0,80))}</span>`:""}</td>
+          <td class="num">${fmtF(r.prix)}</td>
+          <td class="num">${fmtF(r.cout||0)}</td>
+          <td class="num" style="color:${marge>=20?'#7dd095':marge>=0?'#f3c162':'#f19595'}">${marge}%</td>
+          <td class="num">${fmtInt(r.qte||0)}</td>
+          <td class="num">${typeof r.stock==="number"?fmtInt(r.stock):"—"}</td>
+        </tr>`;
+      }).join("") : "<tr><td colspan=6 class='muted'>Aucun produit</td></tr>"}</tbody></table>
+    </div>
+
+    <h3>Charges fixes (${charges.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Poste</th><th class="num">Montant / mois</th></tr></thead>
+      <tbody>${charges.length ? charges.map(c=>`<tr><td>${escapeHtml(c.nom||"—")}</td><td class="num">${fmtF(c.montant||0)}</td></tr>`).join("") : "<tr><td colspan=2 class='muted'>Aucune charge</td></tr>"}</tbody></table>
+    </div>
+
+    <h3>Ventes récentes (${Math.min(ventes.length, 50)} sur ${ventes.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Date</th><th>Motif</th><th>Canal</th><th class="num">Montant</th></tr></thead>
+      <tbody>${ventes.slice().sort((a,b)=>(b.ts||0)-(a.ts||0)).slice(0,50).map(e=>`
+        <tr><td>${fmtDateTime(e.ts)}</td><td>${escapeHtml(e.motif||"—")}</td><td>${escapeHtml(e.canal||"especes")}</td><td class="num">${fmtF(e.montant)}</td></tr>`).join("") || "<tr><td colspan=4 class='muted'>Aucune vente</td></tr>"}</tbody></table>
+    </div>
+
+    <h3>Dépenses récentes (${Math.min(depenses.length, 30)} sur ${depenses.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Date</th><th>Motif</th><th>Canal</th><th class="num">Montant</th></tr></thead>
+      <tbody>${depenses.slice().sort((a,b)=>(b.ts||0)-(a.ts||0)).slice(0,30).map(e=>`
+        <tr><td>${fmtDateTime(e.ts)}</td><td>${escapeHtml(e.motif||"—")}</td><td>${escapeHtml(e.canal||"especes")}</td><td class="num">${fmtF(e.montant)}</td></tr>`).join("") || "<tr><td colspan=4 class='muted'>Aucune dépense</td></tr>"}</tbody></table>
+    </div>
+
+    <h3>Dettes / Carnet (${carnet.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Client</th><th>Motif</th><th class="num">Montant</th><th>Date</th><th>Statut</th></tr></thead>
+      <tbody>${carnet.length ? carnet.slice().sort((a,b)=>(b.ts||0)-(a.ts||0)).map(c=>`
+        <tr><td><b>${escapeHtml(c.client||"—")}</b></td><td>${escapeHtml(c.motif||"—")}</td><td class="num">${fmtF(c.montant)}</td><td>${fmtDate(c.ts)}</td><td>${c.paye?"<span style='color:#7dd095'>✓ Payée</span>":"<span style='color:#f19595'>⏰ Impayée</span>"}</td></tr>`).join("") : "<tr><td colspan=5 class='muted'>Aucune dette</td></tr>"}</tbody></table>
+    </div>
+
+    <h3>Clients (${clients.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Nom</th><th>Téléphone</th><th>Adresse</th></tr></thead>
+      <tbody>${clients.length ? clients.map(c=>`
+        <tr><td><b>${escapeHtml(c.nom||"—")}</b></td><td>${escapeHtml(c.phone||"—")}</td><td>${escapeHtml(c.adresse||"—")}</td></tr>`).join("") : "<tr><td colspan=3 class='muted'>Aucun client enregistré</td></tr>"}</tbody></table>
+    </div>
+
+    <h3>Commandes récentes (${Math.min(commandes.length, 20)} sur ${commandes.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Créée</th><th>Client</th><th>Statut</th><th class="num">Total</th><th>Livraison</th></tr></thead>
+      <tbody>${commandes.length ? commandes.slice().sort((a,b)=>(b.createdAt||0)-(a.createdAt||0)).slice(0,20).map(o=>{
+        const total = (o.items||[]).reduce((s,it)=>s+(it.prix||0)*(it.qty||1), o.total||0) || o.total || 0;
+        return `<tr><td>${fmtDate(o.createdAt)}</td><td>${escapeHtml(o.clientNom||"—")}</td><td>${escapeHtml(o.statut||"—")}</td><td class="num">${fmtF(total)}</td><td>${escapeHtml(o.dateLivraison||"—")}${o.creneau?" · "+escapeHtml(o.creneau):""}</td></tr>`;
+      }).join("") : "<tr><td colspan=5 class='muted'>Aucune commande</td></tr>"}</tbody></table>
+    </div>
+
+    <h3>Pièces comptables (${Math.min(pieces.length, 30)} sur ${pieces.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Date</th><th>Type</th><th>Tiers</th><th>Canal</th><th class="num">Montant</th></tr></thead>
+      <tbody>${pieces.length ? pieces.slice().sort((a,b)=>String(b.date||"").localeCompare(String(a.date||""))).slice(0,30).map(pc=>`
+        <tr><td>${escapeHtml(pc.date||"—")}</td><td>${escapeHtml(pc.type||"—")}</td><td>${escapeHtml(pc.tiers||"—")}</td><td>${escapeHtml(pc.canal||"—")}</td><td class="num">${fmtF(pc.montant||0)}</td></tr>`).join("") : "<tr><td colspan=5 class='muted'>Aucune pièce</td></tr>"}</tbody></table>
+    </div>
+
+    <h3>Collaborateurs du business (${collaborateurs.length})</h3>
+    <div style="overflow:auto">
+      <table><thead><tr><th>Nom</th><th>Rôle</th><th>Actif</th><th>Permissions</th></tr></thead>
+      <tbody>${collaborateurs.length ? collaborateurs.map(c=>`
+        <tr><td>${escapeHtml(c.nom||"—")}</td><td>${escapeHtml(c.role||"—")}</td><td>${c.actif?"Oui":"Non"}</td><td>${(c.permissions||[]).map(escapeHtml).join(", ")}</td></tr>`).join("") : "<tr><td colspan=4 class='muted'>Aucun collaborateur</td></tr>"}</tbody></table>
+    </div>`;
+}
+
+function exportClientJSON(){
+  const { org, orgId, profiles, members, audit } = __currentDetail;
+  if(!org) return;
+  const payload = {
+    exported_at: new Date().toISOString(),
+    org: { id: orgId, nom: org.nom, owner_email: org.owner_email, created_at: org.created_at, paid_until_ms: org.paid_until_ms, locked_manually: org.locked_manually },
+    members,
+    audit,
+    profiles: profiles.map(p=>({ id: p.id, updated_at: p.updated_at, data: p.data }))
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const safeName = (org.nom||"client").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+  const a = document.createElement("a"); a.href = url; a.download = `boss-client-${safeName}-${today()}.json`; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 
 async function orgAction(act, orgId){

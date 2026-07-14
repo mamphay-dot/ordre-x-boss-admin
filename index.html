@@ -103,6 +103,11 @@ td .badge.b-locked{background:rgba(224,85,85,.2);color:#f19595}
 .deny{color:var(--danger);font-weight:700;margin-top:20px}
 
 .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+.biz-info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:12px}
+.biz-tabs{display:flex;gap:6px;overflow-x:auto;margin:12px 0;padding-bottom:4px}
+.biz-tab{background:var(--char2);color:var(--cream);border:1px solid var(--line);border-radius:8px;padding:8px 14px;font-weight:600;font-size:12.5px;cursor:pointer;white-space:nowrap;font-family:inherit;flex-shrink:0}
+.biz-tab.on{background:var(--gold);color:var(--on-accent);border-color:var(--gold)}
+.modal-box h3{font-family:'Archivo';font-weight:800;font-size:15px;color:var(--gold);margin:18px 0 8px 0;text-transform:uppercase;letter-spacing:.04em}
 @media(max-width:640px){.detail-grid{grid-template-columns:1fr}}
 .detail-card{background:var(--char2);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
 .detail-card .k{color:var(--cream-dim);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
