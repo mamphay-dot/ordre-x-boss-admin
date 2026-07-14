@@ -41,7 +41,30 @@ function showLogin(){
   on($("#lg-signin"),"click", signInPassword);
   on($("#lg-signup"),"click", signUpPassword);
   on($("#lg-magic"),"click", magicLink);
+  on($("#lg-forgot"),"click", forgotPassword);
   on($("#lg-pw"),"keydown", e=>{ if(e.key==="Enter") signInPassword(); });
+}
+
+async function forgotPassword(){
+  const email = $("#lg-email").value.trim();
+  if(!validEmail(email)){ setLoginStatus("Entre d'abord ton email dans le champ ci-dessus.", false); return; }
+  setLoginStatus("Envoi du lien de réinitialisation…");
+  try{
+    // Supabase Auth : POST /auth/v1/recover
+    const cfg = window.__BOSS_SUPABASE__;
+    const resp = await fetch(cfg.url + "/auth/v1/recover", {
+      method:"POST",
+      headers:{"apikey":cfg.anonKey, "Content-Type":"application/json"},
+      body: JSON.stringify({ email, options:{ redirectTo: location.origin + "/" } })
+    });
+    if(!resp.ok){
+      const j = await resp.json().catch(()=>({}));
+      throw new Error(j.message || j.error_description || ("HTTP "+resp.status));
+    }
+    setLoginStatus("Lien de réinitialisation envoyé à <b>"+escapeHtml(email)+"</b>. Ouvre ton email, clique le lien, choisis ton nouveau mot de passe.", true);
+  }catch(e){
+    setLoginStatus("Échec : "+escapeHtml(e.message||"réessaie plus tard"), false);
+  }
 }
 function validEmail(e){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
 function setLoginStatus(html, ok){
